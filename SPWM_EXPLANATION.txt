@@ -1,0 +1,101 @@
+================================================================================
+           3-PHASE SINUSOIDAL PULSE WIDTH MODULATION (SPWM) FIRMWARE
+                    STM32F103 (NUCLEO-F103RB / BluePill)
+================================================================================
+
+1. PROJECT OVERVIEW
+--------------------------------------------------------------------------------
+This STM32 firmware generates 3-Phase Sinusoidal Pulse Width Modulation (SPWM)
+signals using the Advanced Control Timer (TIM1). It produces three complementary
+pairs of PWM outputs (6 signals in total) with dead-time insertion, suitable for
+driving a 3-phase full-bridge inverter (BLDC, PMSM, or Induction Motor control).
+
+Primary target source file:
+- main.c  (Path: Core/Src/main.c)
+
+
+2. KEY HARDWARE & TIMER SETTINGS (TIM1)
+--------------------------------------------------------------------------------
+* MCU Core Clock:           72 MHz (HSE Bypass / PLL x9)
+* PWM Carrier Frequency:    10 kHz
+* Counter Alignment:        Center-Aligned Mode 1 (TIM_COUNTERMODE_CENTERALIGNED1)
+* Timer Clock (f_timer):    72 MHz (Prescaler = 0)
+* Auto-Reload Register:     ARR = 3600
+  - In center-aligned mode, the timer counts up from 0 to 3600, then down to 0:
+    Carrier Frequency = f_timer / (2 * ARR) = 72,000,000 / (2 * 3600) = 10,000 Hz (10 kHz)
+* Dead-Time:                72 clock ticks (~1 microsecond at 72 MHz)
+  - Prevents shoot-through currents in the power inverter legs.
+* Outputs Configured:
+  - Phase A: TIM1_CH1 (PA8)  & complementary TIM1_CH1N (PB13)
+  - Phase B: TIM1_CH2 (PA9)  & complementary TIM1_CH2N (PB14)
+  - Phase C: TIM1_CH3 (PA10) & complementary TIM1_CH3N (PB15)
+
+
+3. CONTROL PARAMETERS
+--------------------------------------------------------------------------------
+Found at lines 37-38 in main.c:
+
+1. MODULATION_INDEX (M = 1.0f):
+   - Range: 0.0f to 1.0f.
+   - Determines duty cycle amplitude and output AC voltage level.
+   - Formula: CCR = (ARR / 2) * (1.0 + M * sin(theta))
+     For M = 1.0, CCR oscillates between 0 (0% duty) and 3600 (100% duty).
+
+2. MOTOR_FREQUENCY (f_out = 50.0f Hz):
+   - Fundamental frequency of the generated sine wave.
+   - Controls rotational speed of AC motor or inverter output AC frequency.
+
+
+4. DETAILED EXECUTION FLOW
+--------------------------------------------------------------------------------
+Step A: Initialization (in main()):
+  1. System clocks are set to 72 MHz with HSE and PLL.
+  2. Peripherals (GPIO, USART2, CAN, TIM1) are initialized.
+  3. Precomputes the Sine Lookup Table:
+     - Table size: SPWM_TABLE_SIZE = 256 entries.
+     - Maps one full sine wave cycle (0 to 2*PI) into compare register values (0 to 3600).
+  4. Calculates Phase Increment (phase_step):
+     - Uses Direct Digital Synthesis (DDS) / Phase Accumulator principle.
+     - Formula:
+       phase_step = (MOTOR_FREQUENCY / SPWM_CARRIER_FREQ) * 2^32
+       For 50 Hz and 10 kHz carrier:
+       phase_step = (50 / 10000) * 4,294,967,296 = 21,474,836
+  5. Starts TIM1 outputs on Channels 1, 2, 3 and complementary outputs (PWMN).
+  6. Enables TIM1 Update Interrupt (HAL_TIM_Base_Start_IT).
+
+Step B: Real-Time Execution (TIM1 Interrupt Callback):
+  1. Every PWM cycle (10 kHz / 100 microseconds), TIM1 fires an update interrupt:
+     TIM1_UP_IRQHandler() -> HAL_TIM_IRQHandler() -> HAL_TIM_PeriodElapsedCallback().
+  2. Inside HAL_TIM_PeriodElapsedCallback():
+     a. Increments 32-bit phase_accumulator by phase_step. When it reaches 2^32,
+        it naturally wraps around to 0 (overflow = 1 complete 360° electrical cycle).
+     b. Derives phase offsets for balanced 3-phase generation (separated by 120°):
+        - Phase A angle: pA = phase_accumulator
+        - Phase B angle: pB = phase_accumulator + 120° (0x55555555)
+        - Phase C angle: pC = phase_accumulator + 240° (0xAAAAAAAB)
+     c. Converts top 8 bits (>> 24) of pA, pB, pC into index numbers (0 to 255)
+        for the precomputed sine lookup table.
+     d. Writes duty values into TIM1 compare registers:
+        - TIM1->CCR1 = sine_table[idxA]
+        - TIM1->CCR2 = sine_table[idxB]
+        - TIM1->CCR3 = sine_table[idxC]
+
+
+5. PIN CONNECTIONS (STM32F103)
+--------------------------------------------------------------------------------
+Pin Name  | Function     | Description
+----------+--------------+------------------------------------------------------
+PA8       | TIM1_CH1     | Phase A High-Side Gate Drive
+PB13      | TIM1_CH1N    | Phase A Low-Side Gate Drive (Complementary + Deadtime)
+PA9       | TIM1_CH2     | Phase B High-Side Gate Drive
+PB14      | TIM1_CH2N    | Phase B Low-Side Gate Drive (Complementary + Deadtime)
+PA10      | TIM1_CH3     | Phase C High-Side Gate Drive
+PB15      | TIM1_CH3N    | Phase C Low-Side Gate Drive (Complementary + Deadtime)
+PA2       | USART2_TX    | Serial Debug / Communication (115200 Baud)
+PA3       | USART2_RX    | Serial Debug / Communication (115200 Baud)
+PC13      | B1_Pin (EXTI)| User Push Button (with interrupt EXTI15_10)
+PA5       | LD2_Pin      | User On-board LED
+
+================================================================================
+                      DOCUMENT GENERATED SUCCESSFULLY
+================================================================================
